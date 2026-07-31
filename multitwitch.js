@@ -517,21 +517,22 @@ const MultitwitchApp = (function () {
                     state.players[slot].setQuality('480p');
                     state.players[slot].play();
 
-                    // Anti-pause : On met le volume à 1% au lieu de Mute pour que le navigateur
-                    // considère l'onglet comme "actif" et ne le suspende pas.
-                    if (slot !== 1) {
-                        state.players[slot].setMuted(false);
-                        state.players[slot].setVolume(0.0001);
-                    }
+                    // Les streams secondaires restent MUTE pour respecter l'Autoplay Policy du navigateur
                 }
             });
 
             // Le moteur ANTI-PAUSE
+            let pauseTimeout = null;
             player.addEventListener(Twitch.Player.PAUSE, () => {
                 if (state.userPaused[slot] || !state.players[slot]) return;
 
-                // On force la lecture immédiatement
-                if (typeof player.play === 'function') player.play();
+                // Debounce pour éviter de spammer le SDK si le navigateur bloque l'autoplay
+                clearTimeout(pauseTimeout);
+                pauseTimeout = setTimeout(() => {
+                    if (state.players[slot] && typeof state.players[slot].play === 'function') {
+                        state.players[slot].play();
+                    }
+                }, 500);
             });
         } catch (err) {
             console.error(`[Twitch] Failed to init slot ${slot}:`, err);
@@ -576,12 +577,8 @@ const MultitwitchApp = (function () {
             }
 
             const newSrc = 'https://www.twitch.tv/embed/' + newChannel + '/chat?' + parentParams + '&darkpopout';
-            chatIframe.dataset.src = newSrc; // On stocke l'URL sans la charger
-
-            // Lazy Loading : on ne charge l'iframe que si c'est l'onglet de tchat actif
-            if (state.activeChatTab == slot && chatIframe.src !== newSrc) {
-                chatIframe.src = newSrc;
-            }
+            chatIframe.src = newSrc; // Chargement immédiat en arrière-plan
+            chatIframe.dataset.src = newSrc;
 
             if (slotDOM.chatBtn) {
                 slotDOM.chatBtn.textContent = newChannel.toUpperCase();
@@ -663,9 +660,6 @@ const MultitwitchApp = (function () {
             if (iframe) {
                 iframe.classList.remove('keep-alive-hidden');
                 iframe.classList.add('keep-alive-visible');
-                if (iframe.getAttribute('src') !== iframe.dataset.src) {
-                    iframe.src = iframe.dataset.src;
-                }
             }
 
             const activeBtn = SLOTS[target] && SLOTS[target].chatBtn;

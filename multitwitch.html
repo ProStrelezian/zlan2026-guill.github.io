@@ -4,51 +4,59 @@
 <head>
     <meta charset="UTF-8">
     <script>
-        // ANTI-PAUSE & WAKE LOCK
+        // ANTI-PAUSE & WAKE LOCK (Version Nettoyée)
         (function () {
             // 1. WAKE LOCK : Garde l'onglet actif au niveau du système
             let wakeLock = null;
             const requestWakeLock = async () => {
-                if ('wakeLock' in navigator) {
+                if ('wakeLock' in navigator && !wakeLock) {
                     try { wakeLock = await navigator.wakeLock.request('screen'); } catch (err) { }
                 }
             };
             requestWakeLock();
 
             // 2. SPOOFING : On ment au navigateur sur la visibilité
-            const spoof = () => {
+            try {
                 Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
                 Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
 
-                // BYPASS INTERSECTION OBSERVER V2
+                // BYPASS INTERSECTION OBSERVER V2 (Version Sécurisée)
+                // Évite les conflits avec le SDK Twitch tout en forçant la visibilité
                 if (window.IntersectionObserver) {
                     const OriginalObserver = window.IntersectionObserver;
-                    window.IntersectionObserver = class extends OriginalObserver {
-                        constructor(callback, options) {
-                            super((entries, observer) => {
-                                const spoofedEntries = entries.map(entry => new Proxy(entry, {
-                                    get: (target, prop) => {
-                                        if (prop === 'isIntersecting' || prop === 'isVisible') return true;
-                                        if (prop === 'intersectionRatio') return 1;
-                                        return target[prop];
-                                    }
-                                }));
-                                callback(spoofedEntries, observer);
-                            }, options);
-                        }
+                    window.IntersectionObserver = function (callback, options) {
+                        const safeCallback = function (entries, observer) {
+                            const spoofedEntries = entries.map(entry => {
+                                // Clone sécurisé de l'entrée
+                                const safeEntry = Object.create(Object.getPrototypeOf(entry));
+                                Object.defineProperties(safeEntry, {
+                                    time: { value: entry.time, enumerable: true },
+                                    target: { value: entry.target, enumerable: true },
+                                    rootBounds: { value: entry.rootBounds, enumerable: true },
+                                    boundingClientRect: { value: entry.boundingClientRect, enumerable: true },
+                                    intersectionRect: { value: entry.boundingClientRect, enumerable: true }, // Visibilité max
+                                    intersectionRatio: { value: 1, enumerable: true },
+                                    isIntersecting: { value: true, enumerable: true },
+                                    isVisible: { value: true, enumerable: true }
+                                });
+                                return safeEntry;
+                            });
+                            return callback(spoofedEntries, observer);
+                        };
+                        return new OriginalObserver(safeCallback, options);
                     };
+                    window.IntersectionObserver.prototype = OriginalObserver.prototype;
                 }
-            };
-            spoof();
+            } catch (e) { }
 
             // 3. EVENT BLOCKING : On intercepte les événements de mise en veille
-            // On laisse passer visibilitychange seulement pour notre propre WakeLock si besoin
-            window.addEventListener('visibilitychange', (e) => {
-                if (document.visibilityState === 'visible') requestWakeLock();
+            const block = (e) => {
                 e.stopImmediatePropagation();
-            }, true);
+                if (e.type === 'visibilitychange' && document.visibilityState === 'visible') requestWakeLock();
+            };
+            window.addEventListener('visibilitychange', block, true);
+            document.addEventListener('visibilitychange', block, true);
 
-            document.addEventListener('visibilitychange', (e) => e.stopImmediatePropagation(), true);
             window.addEventListener('blur', (e) => {
                 if (window.MultitwitchApp && window.MultitwitchApp.triggerAntiPause) {
                     window.MultitwitchApp.triggerAntiPause();
@@ -56,38 +64,37 @@
                 e.stopImmediatePropagation();
             }, true);
 
-            // 4. HEARTBEAT : Cookie actif
+            // 4. ANTI-DISCARD (Memory Saver Override)
+            window.addEventListener('beforeunload', () => { });
+
+            // 5. HEARTBEAT : Cookie actif
             setInterval(() => {
                 document.cookie = "zlan_active=" + Date.now() + "; path=/; max-age=60; SameSite=Lax";
             }, 10000);
 
-            // 5. AUDIO WAKE LOCK : Force le navigateur à ne JAMAIS suspendre l'onglet (Contre le Memory Saver)
-            // Joue une fréquence inaudible (volume 0) pour simuler une activité multimédia permanente.
+            // 6. AUDIO WAKE LOCK (Version Améliorée)
+            // Force l'onglet à rester actif au niveau du moteur multimédia
             const createAudioWakeLock = () => {
                 try {
                     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
                     const oscillator = audioCtx.createOscillator();
                     const gainNode = audioCtx.createGain();
 
-                    // Volume à 0 (Totalement silencieux)
-                    gainNode.gain.value = 0;
+                    gainNode.gain.value = 0.0001; // Volume non-nul mais inaudible (contourne les sécurités strictes)
                     oscillator.connect(gainNode);
                     gainNode.connect(audioCtx.destination);
                     oscillator.start();
 
-                    // Les navigateurs exigent souvent une interaction pour démarrer l'audio
                     const resumeAudio = () => {
                         if (audioCtx.state === 'suspended') audioCtx.resume();
                     };
-                    document.addEventListener('click', resumeAudio, { once: true });
+                    // Multi-déclencheurs pour s'assurer que l'audio démarre
+                    ['click', 'touchstart', 'keydown'].forEach(evt =>
+                        document.addEventListener(evt, resumeAudio, { once: true })
+                    );
                 } catch (e) { }
             };
             createAudioWakeLock();
-
-            // 6. ANTI-DISCARD (Memory Saver Override)
-            // Ajouter un écouteur 'beforeunload' force Chrome/Edge à classer cet onglet comme "contenant des données non sauvegardées".
-            // Le moteur Chromium refusera catégoriquement de le suspendre ou de le vider de la RAM.
-            window.addEventListener('beforeunload', () => { });
         })();
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -316,6 +323,15 @@
             </div>
         </div>
 
+        <section class="w-[98%] 2xl:w-[95%] mx-auto px-2 md:px-3 mb-8 mt-8">
+            <div class="pixel-card w-full max-w-[920px] mx-auto bg-[#0f0f13] p-4 md:p-6 text-center"
+                style="border: 2px solid var(--pixel-green);">
+                <div class="font-pixel text-[var(--pixel-green)] text-lg md:text-xl tracking-wide">
+                    Le multitwitch va être rework pour le ZEVENT 2026 (avec de nouvelles choses) ! Stay Tuned !
+                </div>
+            </div>
+        </section>
+
         <footer
             class="w-full text-center py-6 mt-4 border-t-2 border-[#27272a] text-slate-500 font-text text-xs md:text-sm px-3">
             <p>@2026 <span class="cursor-pointer hover:text-white transition-colors" title="🤫">Strelezian</span> - Ceci
@@ -356,7 +372,8 @@
                         class="bg-[#18181b] border-l-4 border-[#3b82f6] p-4 hover:bg-white/5 transition-colors h-full flex flex-col">
                         <h3 class="font-pixel text-white text-xs md:text-sm mb-2 flex items-center gap-2"><span
                                 class="text-[#3b82f6]">🔊</span> AUDIO & LECTURE</h3>
-                        <p class="text-slate-400">Pour éviter la cacophonie, <span class="text-slate-200">le son des streams
+                        <p class="text-slate-400">Pour éviter la cacophonie, <span class="text-slate-200">le son des
+                                streams
                                 secondaires est réduit à 1%</span> par défaut. Cela empêche votre navigateur de mettre
                             l'onglet en veille. Le bouton <span class="text-slate-200 font-bold">Play/Pause</span>
                             au-dessus du stream le suspend totalement pour économiser votre connexion.</p>
